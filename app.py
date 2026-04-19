@@ -254,7 +254,10 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("**Pipefy**")
-    st.success("✅ pipefy_latest.xlsx") if PIPEFY_PATH.exists() else st.error("❌ Não encontrado")
+    if PIPEFY_PATH.exists():
+        st.success("✅ pipefy_latest.xlsx encontrado")
+    else:
+        st.error("❌ Não encontrado em data/")
     novo_pipefy = st.file_uploader("Atualizar Pipefy", type=["xlsx"], key="up_pipefy")
     if novo_pipefy:
         PIPEFY_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -265,7 +268,10 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("**Analise de Precos**")
-    st.success("✅ analise_precos.xlsx") if ANALISE_PATH.exists() else st.warning("⚠️ Não encontrado")
+    if ANALISE_PATH.exists():
+        st.success("✅ analise_precos.xlsx encontrado")
+    else:
+        st.warning("⚠️ Não encontrado — funcionalidades de preço desabilitadas")
     novo_analise = st.file_uploader("Atualizar Analise", type=["xlsx"], key="up_analise")
     if novo_analise:
         ANALISE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -276,7 +282,10 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("**Planilha Geral (Dispensas)**")
-    st.success("✅ planilha_geral.xlsx") if GERAL_PATH.exists() else st.warning("⚠️ Não encontrado")
+    if GERAL_PATH.exists():
+        st.success("✅ planilha_geral.xlsx encontrado")
+    else:
+        st.warning("⚠️ Não encontrado")
     novo_geral = st.file_uploader("Atualizar Planilha Geral", type=["xlsx"], key="up_geral")
     if novo_geral:
         GERAL_PATH.parent.mkdir(parents=True, exist_ok=True)
