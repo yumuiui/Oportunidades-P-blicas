@@ -108,19 +108,27 @@ st.markdown("""
 # ─────────────────────────────────────────────────────────────────────────────
 
 def extrair_numero_op(texto):
+    # OP Petronect: 10 dígitos começando com 7
     m = re.search(r'\b(7\d{9})\b', texto)
     return m.group(1) if m else None
 
 def extrair_prazo(texto):
-    m = re.search(r'(?:Prazo|Data[- ]Limite|Encerramento)[:\s]+(\d{2}/\d{2}/\d{4})', texto, re.IGNORECASE)
-    return m.group(1) if m else ""
+    padroes = [
+        r'(?:Data\s*de\s*Encerramento|Data\s*Fim|Data\s*Limite|Encerramento|Prazo\s*Final)[^\d]*(\d{2}/\d{2}/\d{4})',
+        r'(\d{2}/\d{2}/\d{4})\s*(?:\d{2}:\d{2})?',
+    ]
+    for p in padroes:
+        m = re.search(p, texto, re.IGNORECASE)
+        if m:
+            return m.group(1)
+    return ""
 
 def extrair_fabricante(texto):
-    m = re.search(r'(?:FABRICANTE|Fabricante|Marca)[:\s]+([A-Z][A-Z0-9 &\-\.]{1,30})', texto)
+    m = re.search(r'(?:FABRICANTE|Fabricante|Marca\s*(?:do\s*Fabricante)?)[:\s]+([A-Z][A-Z0-9 &/\-\.]{1,30})', texto)
     if m:
-        fab = m.group(1).strip().rstrip(".")
+        fab = m.group(1).strip().rstrip(".").strip()
         if len(fab) > 2:
-            return fab
+            return fab.upper()
     texto_upper = texto.upper()
     for fab in FABRICANTES_CONHECIDOS:
         if fab in texto_upper:
@@ -133,11 +141,17 @@ def extrair_escopo(texto):
     return ", ".join(encontrados) if encontrados else "Outros"
 
 def extrair_descricao(texto):
-    m = re.search(r'(?:Descrição|Objeto)[:\s]+(.{10,100})', texto, re.IGNORECASE)
-    if m:
-        return m.group(1).strip()[:100]
-    linhas = [l.strip() for l in texto.split('\n') if len(l.strip()) > 15]
-    return linhas[1][:100] if len(linhas) > 1 else ""
+    for pattern in [
+        r'(?:Objeto\s*da\s*Licitacao|Objeto)[:\s]+(.{15,150})',
+        r'(?:Descricao\s*Resumida|Descricao|Descri..o)[:\s]+(.{15,150})',
+    ]:
+        m = re.search(pattern, texto, re.IGNORECASE)
+        if m:
+            return re.sub(r'\s+', ' ', m.group(1)).strip()[:120]
+    op = extrair_numero_op(texto)
+    linhas = [l.strip() for l in texto.split('\n') if len(l.strip()) > 20 and l.strip() != op]
+    linhas = [l for l in linhas if not re.match(r'^[\d/:\s\-]+$', l)]
+    return linhas[0][:120] if linhas else ""
 
 def classificar_fase(fase):
     if fase in FASES_LANCADAS:   return "Lancada"
@@ -415,8 +429,10 @@ with tab1:
         df_show.columns = ["N° OP","Status","Fabricante","Escopo","Prazo","Descricao","Fase Pipefy","Arquivo ZIP"][:len(colunas)]
         st.dataframe(df_show, use_container_width=True, hide_index=True)
 
-        csv = df_show.to_csv(index=False).encode("utf-8")
-        st.download_button("⬇️ Exportar (.csv)", data=csv, file_name="nextsupply_ops.csv", mime="text/csv")
+        buf = BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            df_show.to_excel(writer, index=False, sheet_name="OPS")
+        st.download_button("⬇️ Exportar (.xlsx)", data=buf.getvalue(), file_name="nextsupply_ops.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 2 — HISTÓRICO DE PREÇOS
@@ -483,37 +499,59 @@ with tab3:
     pdf_sophia = st.file_uploader("📎 Suba aqui o PDF da oportunidade", type=["pdf"], key="sophia_pdf")
 
     if pdf_sophia:
-        with st.spinner("Lendo PDF..."):
-            try:
-                conteudo_pdf = pdf_sophia.read()
-                with pdfplumber.open(BytesIO(conteudo_pdf)) as pdf:
-                    texto = "\n".join(p.extract_text() or "" for p in pdf.pages)
+        conteudo_pdf = pdf_sophia.read()
+        if not conteudo_pdf:
+            st.error("PDF vazio. Tente novamente.")
+        else:
+            with st.spinner("Lendo PDF..."):
+                erro = None
+                texto = ""
+                try:
+                    with pdfplumber.open(BytesIO(conteudo_pdf)) as pdf:
+                        texto = "\n".join(p.extract_text() or "" for p in pdf.pages)
+                except Exception as e:
+                    erro = str(e)
 
+            if erro:
+                st.error(f"Erro ao abrir PDF: {erro}")
+            elif not texto.strip():
+                st.error("Nao foi possivel extrair texto deste PDF. Pode ser um PDF escaneado ou protegido.")
+            else:
                 op_num     = extrair_numero_op(texto)
                 fabricante = extrair_fabricante(texto)
                 escopo     = extrair_escopo(texto)
                 prazo      = extrair_prazo(texto)
+                descricao  = extrair_descricao(texto)
 
+                # ── Dados identificados ──
                 st.markdown("<div class='section-header'>📌 Dados identificados no PDF</div>", unsafe_allow_html=True)
                 ca, cb, cc, cd = st.columns(4)
                 ca.metric("N° OP",      op_num or "Nao identificado")
                 cb.metric("Fabricante", fabricante)
                 cc.metric("Escopo",     escopo)
                 cd.metric("Prazo",      prazo or "-")
+                if descricao:
+                    st.caption(f"Descricao: {descricao}")
+
+                # Debug: mostrar trecho do texto extraido
+                with st.expander("🔍 Ver texto bruto extraído do PDF (para depuração)"):
+                    st.text(texto[:2000])
 
                 st.markdown("---")
 
-                # STATUS NO PIPEFY
+                # ── Status no Pipefy ──
                 st.markdown("<div class='section-header'>📊 Status no Pipefy</div>", unsafe_allow_html=True)
-
-                if df_pipefy_data is not None and op_num:
+                if df_pipefy_data is None:
+                    st.info("Carregue o relatório Pipefy na barra lateral para verificar o status.")
+                elif not op_num:
+                    st.warning("Numero de OP nao identificado no PDF — nao e possivel verificar status no Pipefy.")
+                else:
                     linha = df_pipefy_data[df_pipefy_data["op"] == op_num]
                     if not linha.empty:
                         fase   = linha.iloc[0]["fase"]
                         etiq   = linha.iloc[0]["etiquetas"]
                         criado = linha.iloc[0]["criado_em"]
                         status = classificar_fase(fase)
-
                         box_map = {
                             "Lancada":      ("ok-box",   "✅ LANCADA"),
                             "Declinada":    ("warn-box", "❌ DECLINADA"),
@@ -524,12 +562,8 @@ with tab3:
                         box_class, titulo = box_map.get(status, ("info-box", "ℹ️ NO PIPEFY"))
                         criado_str = str(criado)[:10] if pd.notna(criado) else "-"
                         st.markdown(
-                            f"<div class='{box_class}'>"
-                            f"<strong>{titulo}</strong><br>"
-                            f"Fase: <strong>{fase}</strong><br>"
-                            f"Etiquetas: {etiq}<br>"
-                            f"Criado em: {criado_str}"
-                            f"</div>",
+                            f"<div class='{box_class}'><strong>{titulo}</strong><br>"
+                            f"Fase: <strong>{fase}</strong> &nbsp;|&nbsp; Etiquetas: {etiq} &nbsp;|&nbsp; Criado em: {criado_str}</div>",
                             unsafe_allow_html=True,
                         )
                     else:
@@ -537,12 +571,8 @@ with tab3:
                             st.markdown("<div class='warn-box'>⚪ <strong>IGNORADA</strong> — Recebida no ZIP mas nunca trabalhada no Pipefy.</div>", unsafe_allow_html=True)
                         else:
                             st.markdown("<div class='warn-box'>⚪ <strong>NAO ENCONTRADA</strong> — Nao esta nos ZIPs nem no Pipefy.</div>", unsafe_allow_html=True)
-                elif df_pipefy_data is None:
-                    st.info("Carregue o relatório Pipefy na barra lateral para verificar o status.")
-                else:
-                    st.warning("N° de OP nao identificado no PDF.")
 
-                # HISTÓRICO DE PREÇO
+                # ── Histórico de Preço ──
                 st.markdown("<div class='section-header'>💰 Historico na Analise de Precos</div>", unsafe_allow_html=True)
                 analise = carregar_analise()
                 if analise is None:
@@ -550,23 +580,22 @@ with tab3:
                 else:
                     dados, _ = analise
                     termos = [t for t in [op_num, fabricante] if t and t != "Nao identificado"]
-                    resultados = []
-                    for termo in termos:
-                        cols_b = [c for c in ["OP","PART NUMBER","FABRICANTE"] if c in dados.columns]
-                        mask   = dados[cols_b].apply(
-                            lambda col: col.astype(str).str.upper().str.contains(termo.upper(), na=False)
-                        ).any(axis=1)
-                        resultados.append(dados[mask])
-
-                    df_hist = pd.concat(resultados).drop_duplicates() if resultados else pd.DataFrame()
-                    if not df_hist.empty:
-                        st.success(f"✅ {len(df_hist)} registros históricos encontrados!")
-                        show = [c for c in ["DATA","OP","ITEM","PART NUMBER","FABRICANTE","NOSSO PRECO UNIT.","NOSSO PRAZO","Resultado Esperado"] if c in df_hist.columns]
-                        if not show:
-                            show = list(df_hist.columns[:8])
-                        st.dataframe(df_hist[show], use_container_width=True, hide_index=True)
+                    if not termos:
+                        st.warning("Sem termos para buscar no historico (OP e fabricante nao identificados).")
                     else:
-                        st.info("⚪ Nenhum historico de preco encontrado para esta oportunidade.")
-
-            except Exception as e:
-                st.error(f"Erro ao processar PDF: {e}")
+                        resultados = []
+                        for termo in termos:
+                            cols_b = [c for c in ["OP","PART NUMBER","FABRICANTE"] if c in dados.columns]
+                            mask = dados[cols_b].apply(
+                                lambda col: col.astype(str).str.upper().str.contains(termo.upper(), na=False)
+                            ).any(axis=1)
+                            resultados.append(dados[mask])
+                        df_hist = pd.concat(resultados).drop_duplicates() if resultados else pd.DataFrame()
+                        if not df_hist.empty:
+                            st.success(f"✅ {len(df_hist)} registros históricos encontrados!")
+                            show = [c for c in ["DATA","OP","ITEM","PART NUMBER","FABRICANTE","NOSSO PRECO UNIT.","NOSSO PRAZO","Resultado Esperado"] if c in df_hist.columns]
+                            if not show:
+                                show = list(df_hist.columns[:8])
+                            st.dataframe(df_hist[show], use_container_width=True, hide_index=True)
+                        else:
+                            st.info("⚪ Nenhum historico de preco encontrado para esta oportunidade.")
